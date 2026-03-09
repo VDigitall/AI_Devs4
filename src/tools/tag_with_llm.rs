@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use tracing::{debug, info, warn};
 
 use super::{Tool, ToolContext};
 
@@ -86,6 +87,12 @@ impl Tool for TagWithLlmTool {
             "additionalProperties": false
         });
 
+        info!(
+            items = data.len(),
+            field = %field,
+            tags = ?tags,
+            "tag_with_llm: start"
+        );
         ctx.log(format!(
             "tag_with_llm: tagging {} items by field '{field}'",
             data.len()
@@ -113,12 +120,17 @@ impl Tool for TagWithLlmTool {
                     &format!("Job description: {field_value}"),
                     "tagging_result",
                     schema.clone(),
+                    Some("google/gemini-3.1-flash-lite-preview"),
                 )
                 .await;
 
             let assigned_tags = match result {
-                Ok(v) => v["tags"].clone(),
+                Ok(v) => {
+                    debug!(item = i, raw_tags = ?v["tags"], "tag_with_llm: LLM response");
+                    v["tags"].clone()
+                }
                 Err(e) => {
+                    warn!(item = i, error = %e, "tag_with_llm: LLM error, skipping item");
                     ctx.log(format!("tag_with_llm: error on item {i}: {e}")).await;
                     json!([])
                 }
@@ -139,16 +151,21 @@ impl Tool for TagWithLlmTool {
                 })
                 .unwrap_or_default();
 
+            let tag_strs: Vec<&str> = valid_tags.iter().filter_map(|v| v.as_str()).collect();
+            debug!(item = i, tags = ?tag_strs, "tag_with_llm: item tagged");
+
             let mut obj = item.clone();
             obj["tags"] = Value::Array(valid_tags);
             tagged.push(obj);
 
             if (i + 1) % 10 == 0 || i + 1 == data.len() {
+                info!(progress = i + 1, total = data.len(), "tag_with_llm: progress");
                 ctx.log(format!("tag_with_llm: {}/{} items tagged", i + 1, data.len()))
                     .await;
             }
         }
 
+        info!(tagged = tagged.len(), "tag_with_llm: done");
         Ok(Value::Array(tagged))
     }
 }

@@ -2,6 +2,7 @@ use anyhow::Result;
 use ratatui::widgets::ListState;
 use std::path::Path;
 use std::sync::Arc;
+use tracing::{debug, info, warn};
 
 use crate::agent::{Agent, AgentEvent, PlanStep, StepStatus};
 use crate::config::Config;
@@ -46,6 +47,10 @@ impl App {
         );
 
         let task_names = load_task_names(TASKS_DIR);
+        info!(tasks = task_names.len(), "loaded tasks from '{TASKS_DIR}/'");
+        for name in &task_names {
+            debug!(task = %name, "task available");
+        }
 
         let mut task_list_state = ListState::default();
         if !task_names.is_empty() {
@@ -117,6 +122,7 @@ impl App {
 
     pub async fn trigger_run_task(&mut self, events: &EventHandler) {
         if !matches!(self.state, AppState::Idle | AppState::Done | AppState::Error(_)) {
+            warn!("trigger_run_task called while state is not idle/done/error — ignoring");
             self.push_log("A task is already running. Wait for it to finish.");
             return;
         }
@@ -138,10 +144,13 @@ impl App {
         let content = match std::fs::read_to_string(&task_path) {
             Ok(c) => c,
             Err(e) => {
+                warn!(path = %task_path, error = %e, "failed to read task file");
                 self.state = AppState::Error(format!("Cannot read {task_path}: {e}"));
                 return;
             }
         };
+
+        info!(task = %task_name, chars = content.len(), "starting task");
 
         // Reset state for new run
         self.plan_steps.clear();
@@ -149,6 +158,7 @@ impl App {
         self.logs.clear();
         self.log_scroll = 0;
         self.state = AppState::Planning;
+        debug!("state → Planning");
 
         self.push_log(format!("Starting task: {task_name}"));
 
@@ -166,14 +176,22 @@ impl App {
     pub fn apply_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Log(msg) => {
+                debug!(log = %msg, "agent log");
                 self.push_log(msg);
                 self.scroll_log_to_bottom();
             }
             AgentEvent::PlanReady(steps) => {
+                let first_pending = steps
+                    .iter()
+                    .position(|s| s.status == StepStatus::Pending)
+                    .unwrap_or(0);
+                info!(steps = steps.len(), first_pending, "plan updated → state Executing");
                 self.plan_steps = steps;
-                self.state = AppState::Executing { current_step: 0 };
+                self.state = AppState::Executing { current_step: first_pending };
             }
             AgentEvent::StepStarted(i) => {
+                let tool = self.plan_steps.get(i).map(|s| s.tool_name.as_str()).unwrap_or("?");
+                debug!(step = i + 1, tool = %tool, "step started");
                 self.current_step = Some(i);
                 if let Some(step) = self.plan_steps.get_mut(i) {
                     step.status = StepStatus::Running;
@@ -181,24 +199,31 @@ impl App {
                 self.state = AppState::Executing { current_step: i };
             }
             AgentEvent::StepCompleted(i, _result) => {
+                let tool = self.plan_steps.get(i).map(|s| s.tool_name.as_str()).unwrap_or("?");
+                debug!(step = i + 1, tool = %tool, "step completed");
                 if let Some(step) = self.plan_steps.get_mut(i) {
                     step.status = StepStatus::Done;
                 }
             }
             AgentEvent::StepFailed(i, err) => {
+                let tool = self.plan_steps.get(i).map(|s| s.tool_name.as_str()).unwrap_or("?");
+                warn!(step = i + 1, tool = %tool, error = %err, "step failed → state Error");
                 if let Some(step) = self.plan_steps.get_mut(i) {
                     step.status = StepStatus::Failed(err.clone());
                 }
                 self.state = AppState::Error(format!("Step {} failed: {err}", i + 1));
             }
             AgentEvent::MissingTool(name) => {
+                warn!(tool = %name, "missing tool → state Error");
                 self.state = AppState::Error(format!("Missing tool: {name}"));
             }
             AgentEvent::Done => {
+                info!("agent done → state Done");
                 self.state = AppState::Done;
                 self.current_step = None;
             }
             AgentEvent::Error(e) => {
+                warn!(error = %e, "agent error → state Error");
                 self.state = AppState::Error(e);
             }
         }

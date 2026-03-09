@@ -15,16 +15,41 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use tracing::info;
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::{fmt, EnvFilter};
 
 use app::App;
 use config::Config;
 use event::EventHandler;
 
+/// Initialise file-based tracing. Returns the guard that must be kept alive
+/// for the duration of the program to flush the non-blocking writer on drop.
+fn init_tracing() -> WorkerGuard {
+    let file_appender = tracing_appender::rolling::never(".", "debug.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("ai_devs4=debug,info"));
+
+    fmt::Subscriber::builder()
+        .with_env_filter(filter)
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_target(true)
+        .with_thread_ids(false)
+        .init();
+
+    guard
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install().ok();
+    let _log_guard = init_tracing();
 
     let config = Config::from_env()?;
+    info!("Config loaded. Model: {}", config.openrouter_model);
 
     // Set up terminal
     enable_raw_mode()?;

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::{debug, warn};
 
 const OPENROUTER_API_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -9,41 +10,47 @@ const OPENROUTER_API_URL: &str = "https://openrouter.ai/api/v1/chat/completions"
 #[derive(Debug, Serialize, Clone)]
 pub struct Message {
     pub role: String,
-    pub content: MessageContent,
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(untagged)]
-pub enum MessageContent {
-    Text(String),
-    ToolResult {
-        tool_call_id: String,
-        content: String,
-    },
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
     pub fn system(content: impl Into<String>) -> Self {
         Self {
-            role: "system".to_string(),
-            content: MessageContent::Text(content.into()),
+            role: "system".into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
         Self {
-            role: "user".to_string(),
-            content: MessageContent::Text(content.into()),
+            role: "user".into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: "assistant".into(),
+            content: None,
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
         }
     }
 
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
-            role: "tool".to_string(),
-            content: MessageContent::ToolResult {
-                tool_call_id: tool_call_id.into(),
-                content: content.into(),
-            },
+            role: "tool".into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
         }
     }
 }
@@ -107,7 +114,7 @@ pub struct ResponseMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolCall {
     pub id: String,
     #[serde(rename = "type")]
@@ -115,7 +122,7 @@ pub struct ToolCall {
     pub function: FunctionCall,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCall {
     pub name: String,
     pub arguments: String,
@@ -140,11 +147,13 @@ impl LlmClient {
     }
 
     /// Send a chat completion request with optional tools and structured output.
+    /// Pass `model: Some("…")` to override the client's default model for this call only.
     pub async fn chat(
         &self,
         messages: Vec<Message>,
         tools: Option<Vec<ToolDefinition>>,
         response_format: Option<Value>,
+        model: Option<&str>,
     ) -> Result<ResponseMessage> {
         let serialized_messages: Vec<Value> = messages
             .into_iter()
@@ -152,9 +161,20 @@ impl LlmClient {
             .collect();
 
         let tool_choice = tools.as_ref().map(|_| "auto".to_string());
+        let n_tools = tools.as_ref().map(|t| t.len()).unwrap_or(0);
+        let n_messages = serialized_messages.len();
+        let effective_model = model.unwrap_or(&self.model);
+
+        debug!(
+            model = %effective_model,
+            messages = n_messages,
+            tools = n_tools,
+            has_response_format = response_format.is_some(),
+            "→ LLM request"
+        );
 
         let req = ChatRequest {
-            model: self.model.clone(),
+            model: effective_model.to_string(),
             messages: serialized_messages,
             tools,
             response_format,
@@ -171,28 +191,55 @@ impl LlmClient {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
+        let status = resp.status();
+        debug!(status = %status, "← LLM response received");
+
+        if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
+            warn!(status = %status, body = %body, "LLM API error");
             return Err(anyhow!("OpenRouter API error {status}: {body}"));
         }
 
         let chat_resp: ChatResponse = resp.json().await?;
-        chat_resp
+        let message = chat_resp
             .choices
             .into_iter()
             .next()
             .map(|c| c.message)
-            .ok_or_else(|| anyhow!("No choices returned from OpenRouter"))
+            .ok_or_else(|| anyhow!("No choices returned from OpenRouter"))?;
+
+        let has_content = message.content.is_some();
+        let n_tool_calls = message.tool_calls.as_ref().map(|t| t.len()).unwrap_or(0);
+        debug!(
+            has_content,
+            tool_calls = n_tool_calls,
+            "← LLM response parsed"
+        );
+        if n_tool_calls > 0 {
+            if let Some(calls) = &message.tool_calls {
+                for tc in calls {
+                    debug!(
+                        id = %tc.id,
+                        tool = %tc.function.name,
+                        args = %tc.function.arguments,
+                        "  tool_call"
+                    );
+                }
+            }
+        }
+
+        Ok(message)
     }
 
     /// Convenience: plain text completion (no tools).
-    pub async fn complete(&self, system: &str, user: &str) -> Result<String> {
+    /// Pass `model: Some("…")` to override the client's default model for this call only.
+    pub async fn complete(&self, system: &str, user: &str, model: Option<&str>) -> Result<String> {
         let msg = self
             .chat(
                 vec![Message::system(system), Message::user(user)],
                 None,
                 None,
+                model,
             )
             .await?;
         msg.content
@@ -200,12 +247,14 @@ impl LlmClient {
     }
 
     /// Structured output: returns parsed JSON value.
+    /// Pass `model: Some("…")` to override the client's default model for this call only.
     pub async fn complete_structured(
         &self,
         system: &str,
         user: &str,
         schema_name: &str,
         schema: Value,
+        model: Option<&str>,
     ) -> Result<Value> {
         let response_format = serde_json::json!({
             "type": "json_schema",
@@ -221,6 +270,7 @@ impl LlmClient {
                 vec![Message::system(system), Message::user(user)],
                 None,
                 Some(response_format),
+                model,
             )
             .await?;
 
@@ -228,6 +278,7 @@ impl LlmClient {
             .content
             .ok_or_else(|| anyhow!("LLM returned no text content for structured output"))?;
 
+        debug!(schema = %schema_name, raw = %text, "structured output raw");
         serde_json::from_str(&text).map_err(|e| anyhow!("Failed to parse structured output: {e}\nRaw: {text}"))
     }
 }
