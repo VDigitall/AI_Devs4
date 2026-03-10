@@ -2,3 +2,5 @@
 .env
 *.lock
 tasks/*.md
+*.log
+artifacts/*
