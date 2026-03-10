@@ -2,6 +2,7 @@ pub mod fetch_csv;
 pub mod filter_data;
 pub mod get_env_var;
 pub mod http_post;
+pub mod parse_json;
 pub mod tag_with_llm;
 
 use anyhow::Result;
@@ -111,6 +112,7 @@ pub fn default_registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(fetch_csv::FetchCsvTool);
     reg.register(filter_data::FilterDataTool);
+    reg.register(parse_json::ParseJsonTool);
     reg.register(tag_with_llm::TagWithLlmTool);
     reg.register(http_post::HttpPostTool);
     reg.register(get_env_var::GetEnvVarTool);
