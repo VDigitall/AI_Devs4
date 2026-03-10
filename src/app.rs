@@ -35,12 +35,24 @@ pub struct App {
     pub logs: Vec<String>,
     pub log_scroll: u16,
     pub should_quit: bool,
+    /// Raw secret values that should be masked in the TUI log display.
+    pub secrets: Vec<String>,
+    /// Whether `{FLG:…}` patterns are revealed in the TUI log.
+    pub reveal_flags: bool,
 
     llm: LlmClient,
 }
 
 impl App {
     pub fn new(config: Config) -> Result<Self> {
+        let secrets = vec![
+            config.ag3nts_api_key.clone(),
+            config.openrouter_api_key.clone(),
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+
         let llm = LlmClient::new(
             config.openrouter_api_key.clone(),
             config.openrouter_model.clone(),
@@ -66,8 +78,14 @@ impl App {
             logs: Vec::new(),
             log_scroll: 0,
             should_quit: false,
+            secrets,
+            reveal_flags: false,
             llm,
         })
+    }
+
+    pub fn toggle_reveal_flags(&mut self) {
+        self.reveal_flags = !self.reveal_flags;
     }
 
     // ── Navigation ─────────────────────────────────────────────────────────────

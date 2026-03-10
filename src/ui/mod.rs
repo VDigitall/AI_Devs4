@@ -58,7 +58,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // ── Log view ───────────────────────────────────────────────────────────────
     frame.render_widget(
-        LogViewWidget::new(&app.logs, app.log_scroll),
+        LogViewWidget::new(&app.logs, app.log_scroll, &app.secrets, app.reveal_flags),
         log_area,
     );
 
@@ -70,7 +70,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .map(|s| s.as_str());
 
     frame.render_widget(
-        StatusBarWidget::new(&app.state, selected_name),
+        StatusBarWidget::new(&app.state, selected_name, app.reveal_flags),
         status_area,
     );
 }

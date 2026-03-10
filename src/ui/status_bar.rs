@@ -11,11 +11,12 @@ use crate::app::AppState;
 pub struct StatusBarWidget<'a> {
     pub state: &'a AppState,
     pub task_name: Option<&'a str>,
+    pub reveal_flags: bool,
 }
 
 impl<'a> StatusBarWidget<'a> {
-    pub fn new(state: &'a AppState, task_name: Option<&'a str>) -> Self {
-        Self { state, task_name }
+    pub fn new(state: &'a AppState, task_name: Option<&'a str>, reveal_flags: bool) -> Self {
+        Self { state, task_name, reveal_flags }
     }
 }
 
@@ -62,8 +63,9 @@ impl<'a> Widget for StatusBarWidget<'a> {
             Span::raw("")
         };
 
+        let flag_hint = if self.reveal_flags { "[r] Hide Flag" } else { "[r] Reveal Flag" };
         let keys = Span::styled(
-            " [↑↓] Navigate  [Enter] Run  [q] Quit  [PgUp/PgDn] Scroll Log ",
+            format!(" [↑↓] Navigate  [Enter] Run  [q] Quit  [PgUp/PgDn] Scroll Log  {flag_hint} "),
             Style::default().fg(Color::DarkGray),
         );
 

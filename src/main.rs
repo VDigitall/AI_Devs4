@@ -104,6 +104,7 @@ async fn run(
                     KeyCode::PageUp => app.scroll_log_up(5),
                     KeyCode::End => app.scroll_log_to_bottom(),
                     KeyCode::Esc => app.dismiss_error(),
+                    KeyCode::Char('r') => app.toggle_reveal_flags(),
                     _ => {}
                 }
             }
