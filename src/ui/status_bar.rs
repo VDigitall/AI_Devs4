@@ -35,6 +35,10 @@ impl<'a> Widget for StatusBarWidget<'a> {
                 " EXECUTING ",
                 Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
+            AppState::Waiting => Span::styled(
+                " WAITING ",
+                Style::default().fg(Color::Black).bg(Color::Blue).add_modifier(Modifier::BOLD),
+            ),
             AppState::Done => Span::styled(
                 " DONE ",
                 Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),

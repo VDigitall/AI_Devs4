@@ -10,18 +10,39 @@ use crate::agent::{PlanStep, StepStatus};
 
 pub struct PlanViewWidget<'a> {
     pub steps: &'a [PlanStep],
+    pub sub_steps: &'a [PlanStep],
     pub current_step: Option<usize>,
 }
 
 impl<'a> PlanViewWidget<'a> {
-    pub fn new(steps: &'a [PlanStep], current_step: Option<usize>) -> Self {
-        Self { steps, current_step }
+    pub fn new(
+        steps: &'a [PlanStep],
+        sub_steps: &'a [PlanStep],
+        current_step: Option<usize>,
+    ) -> Self {
+        Self { steps, sub_steps, current_step }
+    }
+}
+
+fn step_icon_style(status: &StepStatus) -> (&'static str, Style) {
+    match status {
+        StepStatus::Pending => ("○", Style::default().fg(Color::DarkGray)),
+        StepStatus::Running => (
+            "►",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ),
+        StepStatus::Done => ("✓", Style::default().fg(Color::Green)),
+        StepStatus::Failed(_) => ("✗", Style::default().fg(Color::Red)),
+        StepStatus::MissingTool => (
+            "?",
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        ),
     }
 }
 
 impl<'a> Widget for PlanViewWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let lines: Vec<Line> = if self.steps.is_empty() {
+        let mut lines: Vec<Line> = if self.steps.is_empty() && self.sub_steps.is_empty() {
             vec![Line::from(Span::styled(
                 "No plan yet. Select a task and press Enter.",
                 Style::default().fg(Color::DarkGray),
@@ -31,27 +52,7 @@ impl<'a> Widget for PlanViewWidget<'a> {
                 .iter()
                 .enumerate()
                 .map(|(i, step)| {
-                    let (icon, style) = match &step.status {
-                        StepStatus::Pending => (
-                            "○",
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        StepStatus::Running => (
-                            "►",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        StepStatus::Done => ("✓", Style::default().fg(Color::Green)),
-                        StepStatus::Failed(_) => ("✗", Style::default().fg(Color::Red)),
-                        StepStatus::MissingTool => (
-                            "?",
-                            Style::default()
-                                .fg(Color::Magenta)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    };
-
+                    let (icon, style) = step_icon_style(&step.status);
                     let number = format!("{:2}. ", i + 1);
                     let tool = format!("{} ", step.tool_name);
                     let args_preview = truncate_args(&step.arguments, 40);
@@ -60,12 +61,52 @@ impl<'a> Widget for PlanViewWidget<'a> {
                         Span::styled(number, Style::default().fg(Color::DarkGray)),
                         Span::styled(icon, style),
                         Span::raw(" "),
-                        Span::styled(tool, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            tool,
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(args_preview, Style::default().fg(Color::Gray)),
                     ])
                 })
                 .collect()
         };
+
+        if !self.sub_steps.is_empty() {
+            // Derive label from the first step's label field (e.g. "proxy")
+            let label = self
+                .sub_steps
+                .first()
+                .and_then(|s| s.label.as_deref())
+                .unwrap_or("subagent");
+
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("── {label} "),
+                    Style::default().fg(Color::Blue).add_modifier(Modifier::DIM),
+                ),
+            ]));
+
+            for (i, step) in self.sub_steps.iter().enumerate() {
+                let (icon, style) = step_icon_style(&step.status);
+                let number = format!("   {:2}. ", i + 1);
+                let tool = format!("{} ", step.tool_name);
+                let args_preview = truncate_args(&step.arguments, 35);
+
+                lines.push(Line::from(vec![
+                    Span::styled(number, Style::default().fg(Color::DarkGray)),
+                    Span::styled(icon, style),
+                    Span::raw(" "),
+                    Span::styled(
+                        tool,
+                        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        args_preview,
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+        }
 
         let paragraph = Paragraph::new(lines)
             .block(
@@ -81,7 +122,6 @@ impl<'a> Widget for PlanViewWidget<'a> {
 }
 
 fn truncate_args(args: &str, max_len: usize) -> String {
-    // Show a compact one-line preview of the arguments JSON
     let compact = args.replace('\n', " ").replace("  ", " ");
     if compact.len() > max_len {
         format!("{}…", &compact[..max_len])

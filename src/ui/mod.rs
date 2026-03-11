@@ -52,7 +52,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // ── Plan view ──────────────────────────────────────────────────────────────
     frame.render_widget(
-        PlanViewWidget::new(&app.plan_steps, app.current_step),
+        PlanViewWidget::new(&app.plan_steps, &app.sub_plan_steps, app.current_step),
         plan_area,
     );
 

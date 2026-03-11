@@ -20,6 +20,8 @@ pub enum AppState {
     Idle,
     Planning,
     Executing { current_step: usize },
+    /// Main loop finished; background services (e.g. proxy) still running.
+    Waiting,
     Done,
     Error(String),
 }
@@ -31,6 +33,8 @@ pub struct App {
     pub task_names: Vec<String>,
     pub task_list_state: ListState,
     pub plan_steps: Vec<PlanStep>,
+    /// Latest tool-call snapshot from the currently active subagent turn.
+    pub sub_plan_steps: Vec<PlanStep>,
     pub current_step: Option<usize>,
     pub logs: Vec<String>,
     pub log_scroll: u16,
@@ -75,6 +79,7 @@ impl App {
             task_names,
             task_list_state,
             plan_steps: Vec::new(),
+            sub_plan_steps: Vec::new(),
             current_step: None,
             logs: Vec::new(),
             log_scroll: 0,
@@ -141,7 +146,7 @@ impl App {
     // ── Task execution ─────────────────────────────────────────────────────────
 
     pub async fn trigger_run_task(&mut self, events: &EventHandler) {
-        if !matches!(self.state, AppState::Idle | AppState::Done | AppState::Error(_)) {
+        if !matches!(self.state, AppState::Idle | AppState::Done | AppState::Waiting | AppState::Error(_)) {
             warn!("trigger_run_task called while state is not idle/done/error — ignoring");
             self.push_log("A task is already running. Wait for it to finish.");
             return;
@@ -174,6 +179,7 @@ impl App {
 
         // Reset state for new run
         self.plan_steps.clear();
+        self.sub_plan_steps.clear();
         self.current_step = None;
         self.logs.clear();
         self.log_scroll = 0;
@@ -236,6 +242,27 @@ impl App {
             AgentEvent::MissingTool(name) => {
                 warn!(tool = %name, "missing tool → state Error");
                 self.state = AppState::Error(format!("Missing tool: {name}"));
+            }
+            AgentEvent::SubPlanReady(steps) => {
+                debug!(steps = steps.len(), "sub-agent plan snapshot");
+                // Merge: update status of known steps, append genuinely new ones.
+                // run_tool_loop resets all_steps on every handle() turn, so we must
+                // accumulate across calls rather than blindly replacing.
+                for step in steps {
+                    if let Some(existing) = self
+                        .sub_plan_steps
+                        .iter_mut()
+                        .find(|s| s.tool_call_id == step.tool_call_id)
+                    {
+                        *existing = step;
+                    } else {
+                        self.sub_plan_steps.push(step);
+                    }
+                }
+            }
+            AgentEvent::Waiting => {
+                info!("agent waiting for background services");
+                self.state = AppState::Waiting;
             }
             AgentEvent::Done => {
                 info!("agent done → state Done");

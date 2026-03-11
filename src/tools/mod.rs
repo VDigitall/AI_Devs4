@@ -14,10 +14,82 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch, Mutex};
+use tokio::task::JoinHandle;
 
 use crate::config::Config;
-use crate::llm::LlmClient;
+use crate::llm::{LlmClient, Message};
+
+// ── SubAgentRunner trait ──────────────────────────────────────────────────────
+
+/// Allows tools to spawn subagent loops that share the same TUI log pipeline.
+#[async_trait]
+pub trait SubAgentRunner: Send + Sync {
+    /// `name` is the short label shown in the plan panel (e.g. "proxy").
+    async fn run(
+        &self,
+        name: &str,
+        system_prompt: &str,
+        messages: &mut Vec<Message>,
+        tools: Vec<Arc<dyn Tool>>,
+        max_iterations: usize,
+        ctx: &ToolContext,
+    ) -> Result<Option<String>>;
+}
+
+// ── Background task tracker ───────────────────────────────────────────────────
+
+/// Collects `JoinHandle`s from tools that spawn long-running background work
+/// (e.g. proxy servers). The agent waits for all of them before reporting Done.
+/// Also carries a watch-channel shutdown signal that tools can listen to.
+#[derive(Clone)]
+pub struct BackgroundTasks {
+    handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    shutdown_tx: Arc<watch::Sender<bool>>,
+    pub shutdown_rx: watch::Receiver<bool>,
+}
+
+impl Default for BackgroundTasks {
+    fn default() -> Self {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        Self {
+            handles: Arc::new(Mutex::new(Vec::new())),
+            shutdown_tx: Arc::new(shutdown_tx),
+            shutdown_rx,
+        }
+    }
+}
+
+impl BackgroundTasks {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a background task handle. The agent will wait for it.
+    pub async fn push(&self, handle: JoinHandle<()>) {
+        self.handles.lock().await.push(handle);
+    }
+
+    /// Wait for all registered tasks to complete.
+    pub async fn join_all(&self) {
+        let handles: Vec<_> = {
+            let mut guard = self.handles.lock().await;
+            guard.drain(..).collect()
+        };
+        for h in handles {
+            let _ = h.await;
+        }
+    }
+
+    pub async fn is_empty(&self) -> bool {
+        self.handles.lock().await.is_empty()
+    }
+
+    /// Signal all background services to shut down gracefully.
+    pub fn notify_shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+    }
+}
 
 // ── ToolContext ───────────────────────────────────────────────────────────────
 
@@ -28,15 +100,24 @@ pub struct ToolContext {
     pub llm: LlmClient,
     pub config: Config,
     pub log_tx: mpsc::Sender<String>,
+    pub sub_agent: Arc<dyn SubAgentRunner>,
+    pub background: BackgroundTasks,
 }
 
 impl ToolContext {
-    pub fn new(llm: LlmClient, config: Config, log_tx: mpsc::Sender<String>) -> Self {
+    pub fn new(
+        llm: LlmClient,
+        config: Config,
+        log_tx: mpsc::Sender<String>,
+        sub_agent: Arc<dyn SubAgentRunner>,
+    ) -> Self {
         Self {
             http: reqwest::Client::new(),
             llm,
             config,
             log_tx,
+            sub_agent,
+            background: BackgroundTasks::new(),
         }
     }
 
@@ -98,6 +179,10 @@ impl ToolRegistry {
         let mut defs: Vec<_> = self.tools.values().map(|t| t.to_definition()).collect();
         defs.sort_by(|a, b| a.function.name.cmp(&b.function.name));
         defs
+    }
+
+    pub fn tools_vec(&self) -> Vec<Arc<dyn Tool>> {
+        self.tools.values().cloned().collect()
     }
 
     pub fn names(&self) -> Vec<String> {

@@ -1,6 +1,7 @@
 pub mod prompts;
 
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -8,7 +9,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::llm::{LlmClient, Message};
-use crate::tools::{ToolContext, ToolRegistry};
+use crate::tools::{SubAgentRunner, Tool, ToolContext, ToolRegistry};
 
 // ── Plan step ─────────────────────────────────────────────────────────────────
 
@@ -19,6 +20,8 @@ pub struct PlanStep {
     pub arguments: String,
     pub status: StepStatus,
     pub result: Option<Value>,
+    /// None = main agent step; Some(name) = subagent step (e.g. "proxy").
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +55,10 @@ pub enum AgentEvent {
     StepCompleted(usize, Value),
     StepFailed(usize, String),
     MissingTool(String),
+    /// Replaces the subagent section of the plan panel with the latest snapshot.
+    SubPlanReady(Vec<PlanStep>),
+    /// Main loop finished; background services still running.
+    Waiting,
     Done,
     Error(String),
 }
@@ -91,17 +98,6 @@ impl Agent {
         info!("Agent: starting iterative execution");
         let _ = event_tx.send(AgentEvent::Log("Planning...".into())).await;
 
-        let tool_defs = self.registry.definitions();
-        info!(available_tools = tool_defs.len(), "sending tools to LLM");
-        for def in &tool_defs {
-            debug!(tool = %def.function.name, "available tool");
-        }
-
-        let mut messages = vec![
-            Message::system(prompts::PLANNING_SYSTEM),
-            Message::user(task_content),
-        ];
-
         let (log_tx, mut log_rx) = mpsc::channel::<String>(64);
         let event_tx_log = event_tx.clone();
         tokio::spawn(async move {
@@ -110,142 +106,266 @@ impl Agent {
             }
         });
 
-        let tool_ctx = ToolContext::new(self.llm.clone(), self.config.clone(), log_tx);
+        let sub_runner = Arc::new(SubAgentRunnerImpl {
+            event_tx: event_tx.clone(),
+        });
+        let tool_ctx = ToolContext::new(
+            self.llm.clone(),
+            self.config.clone(),
+            log_tx,
+            sub_runner,
+        );
 
-        let mut all_steps: Vec<PlanStep> = Vec::new();
-        let mut step_results: Vec<Value> = Vec::new();
+        let tools = self.registry.tools_vec();
+        let mut messages = vec![
+            Message::system(prompts::PLANNING_SYSTEM),
+            Message::user(task_content),
+        ];
 
-        for iteration in 0..MAX_ITERATIONS {
-            debug!(iteration, "agent iteration");
-
-            let response = self
-                .llm
-                .chat(messages.clone(), Some(tool_defs.clone()), None, None)
-                .await
-                .map_err(|e| anyhow!("LLM call failed (iteration {iteration}): {e}"))?;
-
-            let tool_calls = match &response.tool_calls {
-                Some(calls) if !calls.is_empty() => calls.clone(),
-                _ => {
-                    if let Some(content) = &response.content {
-                        info!(content = %content, "LLM finished with message");
-                        let _ = event_tx
-                            .send(AgentEvent::Log(format!("LLM: {content}")))
-                            .await;
-                    }
-                    break;
-                }
-            };
-
-            info!(iteration, tool_calls = tool_calls.len(), "LLM returned tool calls");
-
-            messages.push(Message::assistant_tool_calls(tool_calls.clone()));
-
-            let base_idx = all_steps.len();
-            let new_steps: Vec<PlanStep> = tool_calls
-                .iter()
-                .map(|tc| PlanStep {
-                    tool_call_id: tc.id.clone(),
-                    tool_name: tc.function.name.clone(),
-                    arguments: tc.function.arguments.clone(),
-                    status: StepStatus::Pending,
-                    result: None,
-                })
-                .collect();
-            all_steps.extend(new_steps);
-
-            let _ = event_tx
-                .send(AgentEvent::PlanReady(all_steps.clone()))
-                .await;
-            let _ = event_tx
-                .send(AgentEvent::Log(format!(
-                    "Iteration {}: {} tool call(s)",
-                    iteration + 1,
-                    tool_calls.len()
-                )))
-                .await;
-
-            for (j, tc) in tool_calls.iter().enumerate() {
-                let step_idx = base_idx + j;
-                let total = all_steps.len();
-                let tool_name = all_steps[step_idx].tool_name.clone();
-
-                let tool = match self.registry.get(&tc.function.name) {
-                    Some(t) => t,
-                    None => {
-                        all_steps[step_idx].status = StepStatus::MissingTool;
-                        warn!(tool = %tc.function.name, "tool not found in registry");
-                        let _ = event_tx
-                            .send(AgentEvent::MissingTool(tc.function.name.clone()))
-                            .await;
-                        let _ = event_tx
-                            .send(AgentEvent::Log(format!(
-                                "Missing tool '{}'. Please implement it and restart.",
-                                tc.function.name
-                            )))
-                            .await;
-                        return Ok(());
-                    }
-                };
-
-                all_steps[step_idx].status = StepStatus::Running;
-                let _ = event_tx.send(AgentEvent::StepStarted(step_idx)).await;
-                let _ = event_tx
-                    .send(AgentEvent::Log(format!(
-                        "Step {}/{}: {}",
-                        step_idx + 1,
-                        total,
-                        tool_name
-                    )))
-                    .await;
-
-                let mut params: Value = serde_json::from_str(&tc.function.arguments)
-                    .unwrap_or(Value::Object(serde_json::Map::new()));
-
-                inject_prev_data(&mut params, &step_results);
-
-                info!(step = step_idx + 1, tool = %tool_name, "executing step");
-                debug!(params = %params, "tool params");
-
-                match tool.execute(params, &tool_ctx).await {
-                    Ok(result) => {
-                        let summary = summarise_value(&result);
-                        info!(step = step_idx + 1, tool = %tool_name, result_summary = %summary, "step completed");
-                        all_steps[step_idx].status = StepStatus::Done;
-                        all_steps[step_idx].result = Some(result.clone());
-                        step_results.push(result.clone());
-                        let _ = event_tx
-                            .send(AgentEvent::StepCompleted(step_idx, result.clone()))
-                            .await;
-
-                        let llm_summary = summarize_for_llm(&result);
-                        messages.push(Message::tool_result(&tc.id, llm_summary));
-                    }
-                    Err(e) => {
-                        let err_msg = e.to_string();
-                        error!(step = step_idx + 1, tool = %tool_name, error = %err_msg, "step failed");
-                        all_steps[step_idx].status = StepStatus::Failed(err_msg.clone());
-                        let _ = event_tx
-                            .send(AgentEvent::StepFailed(step_idx, err_msg.clone()))
-                            .await;
-                        // Feed the error back to the LLM so it can recover and retry.
-                        messages.push(Message::tool_result(
-                            &tc.id,
-                            format!("ERROR: {err_msg}. Please fix your parameters and try again."),
-                        ));
-                        step_results.push(Value::Null);
-                    }
-                }
-            }
-        }
+        run_tool_loop(
+            &self.llm,
+            &mut messages,
+            &tools,
+            &tool_ctx,
+            MAX_ITERATIONS,
+            &event_tx,
+            None,
+        )
+        .await?;
 
         info!("Agent: all iterations completed");
         let _ = event_tx
             .send(AgentEvent::Log("All steps completed.".into()))
             .await;
+
+        if !tool_ctx.background.is_empty().await {
+            let _ = event_tx
+                .send(AgentEvent::Log(
+                    "Waiting for background services to finish...".into(),
+                ))
+                .await;
+            let _ = event_tx.send(AgentEvent::Waiting).await;
+            tool_ctx.background.join_all().await;
+        }
+
         let _ = event_tx.send(AgentEvent::Done).await;
         Ok(())
     }
+}
+
+// ── SubAgentRunnerImpl ───────────────────────────────────────────────────────
+
+struct SubAgentRunnerImpl {
+    event_tx: mpsc::Sender<AgentEvent>,
+}
+
+#[async_trait]
+impl SubAgentRunner for SubAgentRunnerImpl {
+    async fn run(
+        &self,
+        name: &str,
+        system_prompt: &str,
+        messages: &mut Vec<Message>,
+        tools: Vec<Arc<dyn Tool>>,
+        max_iterations: usize,
+        ctx: &ToolContext,
+    ) -> Result<Option<String>> {
+        if messages.is_empty() || messages[0].role != "system" {
+            messages.insert(0, Message::system(system_prompt));
+        }
+        run_tool_loop(
+            &ctx.llm,
+            messages,
+            &tools,
+            ctx,
+            max_iterations,
+            &self.event_tx,
+            Some(name),
+        )
+        .await
+    }
+}
+
+// ── Shared tool-calling loop ─────────────────────────────────────────────────
+
+/// The single tool-calling loop used by both the main agent and subagents.
+///
+/// `step_label`:
+///   - `None`  → main agent: emits PlanReady / StepStarted / StepCompleted / StepFailed / MissingTool
+///   - `Some(label)` → subagent: emits SubPlanReady snapshots, steps carry the given label
+pub(crate) async fn run_tool_loop(
+    llm: &LlmClient,
+    messages: &mut Vec<Message>,
+    tools: &[Arc<dyn Tool>],
+    ctx: &ToolContext,
+    max_iterations: usize,
+    event_tx: &mpsc::Sender<AgentEvent>,
+    step_label: Option<&str>,
+) -> Result<Option<String>> {
+    let is_main = step_label.is_none();
+    let tool_defs: Vec<_> = tools.iter().map(|t| t.to_definition()).collect();
+    info!(available_tools = tool_defs.len(), label = ?step_label, "run_tool_loop starting");
+    for def in &tool_defs {
+        debug!(tool = %def.function.name, "available tool");
+    }
+
+    let mut all_steps: Vec<PlanStep> = Vec::new();
+    let mut step_results: Vec<Value> = Vec::new();
+
+    for iteration in 0..max_iterations {
+        debug!(iteration, "tool loop iteration");
+
+        let response = llm
+            .chat(messages.clone(), Some(tool_defs.clone()), None, None)
+            .await
+            .map_err(|e| anyhow!("LLM call failed (iteration {iteration}): {e}"))?;
+
+        let tool_calls = match &response.tool_calls {
+            Some(calls) if !calls.is_empty() => calls.clone(),
+            _ => {
+                let text = response.content.clone();
+                if let Some(content) = &text {
+                    info!(content = %content, "LLM finished with message");
+                    let _ = event_tx
+                        .send(AgentEvent::Log(format!("LLM: {content}")))
+                        .await;
+                }
+                return Ok(text);
+            }
+        };
+
+        info!(iteration, tool_calls = tool_calls.len(), "LLM returned tool calls");
+        messages.push(Message::assistant_tool_calls(tool_calls.clone()));
+
+        let base_idx = all_steps.len();
+        let new_steps: Vec<PlanStep> = tool_calls
+            .iter()
+            .map(|tc| PlanStep {
+                tool_call_id: tc.id.clone(),
+                tool_name: tc.function.name.clone(),
+                arguments: tc.function.arguments.clone(),
+                status: StepStatus::Pending,
+                result: None,
+                label: step_label.map(|l| l.to_string()),
+            })
+            .collect();
+        all_steps.extend(new_steps);
+
+        if is_main {
+            let _ = event_tx
+                .send(AgentEvent::PlanReady(all_steps.clone()))
+                .await;
+        } else {
+            let _ = event_tx
+                .send(AgentEvent::SubPlanReady(all_steps.clone()))
+                .await;
+        }
+        let _ = event_tx
+            .send(AgentEvent::Log(format!(
+                "Iteration {}: {} tool call(s)",
+                iteration + 1,
+                tool_calls.len()
+            )))
+            .await;
+
+        for (j, tc) in tool_calls.iter().enumerate() {
+            let step_idx = base_idx + j;
+            let total = all_steps.len();
+            let tool_name = all_steps[step_idx].tool_name.clone();
+
+            let tool = match tools.iter().find(|t| t.name() == tc.function.name) {
+                Some(t) => t,
+                None => {
+                    all_steps[step_idx].status = StepStatus::MissingTool;
+                    warn!(tool = %tc.function.name, "tool not found");
+                    if is_main {
+                        let _ = event_tx
+                            .send(AgentEvent::MissingTool(tc.function.name.clone()))
+                            .await;
+                    } else {
+                        let _ = event_tx
+                            .send(AgentEvent::SubPlanReady(all_steps.clone()))
+                            .await;
+                    }
+                    let _ = event_tx
+                        .send(AgentEvent::Log(format!(
+                            "Missing tool '{}'. Please implement it and restart.",
+                            tc.function.name
+                        )))
+                        .await;
+                    return Ok(None);
+                }
+            };
+
+            all_steps[step_idx].status = StepStatus::Running;
+            if is_main {
+                let _ = event_tx.send(AgentEvent::StepStarted(step_idx)).await;
+            } else {
+                let _ = event_tx
+                    .send(AgentEvent::SubPlanReady(all_steps.clone()))
+                    .await;
+            }
+            let _ = event_tx
+                .send(AgentEvent::Log(format!(
+                    "Step {}/{}: {}",
+                    step_idx + 1,
+                    total,
+                    tool_name
+                )))
+                .await;
+
+            let mut params: Value = serde_json::from_str(&tc.function.arguments)
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+
+            inject_prev_data(&mut params, &step_results);
+
+            info!(step = step_idx + 1, tool = %tool_name, "executing step");
+            debug!(params = %params, "tool params");
+
+            match tool.execute(params, ctx).await {
+                Ok(result) => {
+                    let summary = summarise_value(&result);
+                    info!(step = step_idx + 1, tool = %tool_name, result_summary = %summary, "step completed");
+                    all_steps[step_idx].status = StepStatus::Done;
+                    all_steps[step_idx].result = Some(result.clone());
+                    step_results.push(result.clone());
+                    if is_main {
+                        let _ = event_tx
+                            .send(AgentEvent::StepCompleted(step_idx, result.clone()))
+                            .await;
+                    } else {
+                        let _ = event_tx
+                            .send(AgentEvent::SubPlanReady(all_steps.clone()))
+                            .await;
+                    }
+
+                    let llm_summary = summarize_for_llm(&result);
+                    messages.push(Message::tool_result(&tc.id, llm_summary));
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    error!(step = step_idx + 1, tool = %tool_name, error = %err_msg, "step failed");
+                    all_steps[step_idx].status = StepStatus::Failed(err_msg.clone());
+                    if is_main {
+                        let _ = event_tx
+                            .send(AgentEvent::StepFailed(step_idx, err_msg.clone()))
+                            .await;
+                    } else {
+                        let _ = event_tx
+                            .send(AgentEvent::SubPlanReady(all_steps.clone()))
+                            .await;
+                    }
+                    messages.push(Message::tool_result(
+                        &tc.id,
+                        format!("ERROR: {err_msg}. Please fix your parameters and try again."),
+                    ));
+                    step_results.push(Value::Null);
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 /// Produce a short human-readable summary of a JSON value for log lines.

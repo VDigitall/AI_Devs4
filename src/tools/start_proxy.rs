@@ -6,7 +6,6 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use crate::config::Config;
 use super::{Tool, ToolContext};
 use super::logistics_assistant::LogisticsAssistant;
 
@@ -15,9 +14,7 @@ use super::logistics_assistant::LogisticsAssistant;
 #[derive(Clone)]
 struct ProxyState {
     assistant: Arc<LogisticsAssistant>,
-    llm: crate::llm::LlmClient,
-    http: reqwest::Client,
-    config: Config,
+    ctx: ToolContext,
 }
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -42,7 +39,7 @@ async fn handle_operator(
 ) -> Json<OperatorResponse> {
     let msg = state
         .assistant
-        .handle(&req.session_id, &req.msg, &state.llm, &state.http, &state.config)
+        .handle(&req.session_id, &req.msg, &state.ctx)
         .await
         .unwrap_or_else(|e| {
             warn!(error = %e, session = %req.session_id, "error handling operator message");
@@ -90,9 +87,7 @@ impl Tool for StartProxyTool {
 
         let state = ProxyState {
             assistant: Arc::new(LogisticsAssistant::new()),
-            llm: ctx.llm.clone(),
-            http: reqwest::Client::new(),
-            config: ctx.config.clone(),
+            ctx: ctx.clone(),
         };
 
         let app = Router::new()
@@ -107,12 +102,25 @@ impl Tool for StartProxyTool {
         info!(addr = %addr, "proxy server bound");
         ctx.log(format!("start_proxy: listening on {addr}")).await;
 
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, app).await {
+        let mut shutdown_rx = ctx.background.shutdown_rx.clone();
+        let handle = tokio::spawn(async move {
+            let shutdown = async move {
+                loop {
+                    if shutdown_rx.changed().await.is_err() {
+                        break;
+                    }
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+            };
+            if let Err(e) = axum::serve(listener, app).with_graceful_shutdown(shutdown).await {
                 warn!(error = %e, "proxy server stopped");
             }
+            info!("proxy server shut down");
         });
 
+        ctx.background.push(handle).await;
         ctx.log(format!("start_proxy: server running on port {port}")).await;
 
         Ok(json!({
