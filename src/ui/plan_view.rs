@@ -12,6 +12,8 @@ pub struct PlanViewWidget<'a> {
     pub steps: &'a [PlanStep],
     pub sub_steps: &'a [PlanStep],
     pub current_step: Option<usize>,
+    pub secrets: &'a [String],
+    pub reveal_flags: bool,
 }
 
 impl<'a> PlanViewWidget<'a> {
@@ -19,9 +21,45 @@ impl<'a> PlanViewWidget<'a> {
         steps: &'a [PlanStep],
         sub_steps: &'a [PlanStep],
         current_step: Option<usize>,
+        secrets: &'a [String],
+        reveal_flags: bool,
     ) -> Self {
-        Self { steps, sub_steps, current_step }
+        Self { steps, sub_steps, current_step, secrets, reveal_flags }
     }
+}
+
+fn mask_flags(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut remaining = s;
+    let marker = "{FLG:";
+    while let Some(start) = remaining.find(marker) {
+        result.push_str(&remaining[..start]);
+        let after_marker = &remaining[start + marker.len()..];
+        if let Some(end) = after_marker.find('}') {
+            result.push_str("{FLG:***}");
+            remaining = &after_marker[end + 1..];
+        } else {
+            result.push_str(&remaining[start..]);
+            return result;
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
+fn mask_secrets(s: &str, secrets: &[String]) -> String {
+    let mut result = s.to_string();
+    for secret in secrets {
+        if !secret.is_empty() {
+            result = result.replace(secret.as_str(), "[KEY:***]");
+        }
+    }
+    result
+}
+
+fn mask_args(args: &str, secrets: &[String], reveal_flags: bool) -> String {
+    let after_secrets = mask_secrets(args, secrets);
+    if reveal_flags { after_secrets } else { mask_flags(&after_secrets) }
 }
 
 fn step_icon_style(status: &StepStatus) -> (&'static str, Style) {
@@ -55,7 +93,8 @@ impl<'a> Widget for PlanViewWidget<'a> {
                     let (icon, style) = step_icon_style(&step.status);
                     let number = format!("{:2}. ", i + 1);
                     let tool = format!("{} ", step.tool_name);
-                    let args_preview = truncate_args(&step.arguments, 40);
+                    let masked = mask_args(&step.arguments, self.secrets, self.reveal_flags);
+                    let args_preview = truncate_args(&masked, 40);
 
                     Line::from(vec![
                         Span::styled(number, Style::default().fg(Color::DarkGray)),
@@ -90,7 +129,8 @@ impl<'a> Widget for PlanViewWidget<'a> {
                 let (icon, style) = step_icon_style(&step.status);
                 let number = format!("   {:2}. ", i + 1);
                 let tool = format!("{} ", step.tool_name);
-                let args_preview = truncate_args(&step.arguments, 35);
+                let masked = mask_args(&step.arguments, self.secrets, self.reveal_flags);
+                let args_preview = truncate_args(&masked, 35);
 
                 lines.push(Line::from(vec![
                     Span::styled(number, Style::default().fg(Color::DarkGray)),
