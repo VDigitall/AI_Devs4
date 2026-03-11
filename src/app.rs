@@ -40,6 +40,7 @@ pub struct App {
     /// Whether `{FLG:…}` patterns are revealed in the TUI log.
     pub reveal_flags: bool,
 
+    config: Config,
     llm: LlmClient,
 }
 
@@ -80,6 +81,7 @@ impl App {
             should_quit: false,
             secrets,
             reveal_flags: false,
+            config,
             llm,
         })
     }
@@ -181,7 +183,7 @@ impl App {
         self.push_log(format!("Starting task: {task_name}"));
 
         let registry = Arc::new(default_registry());
-        let agent = Agent::new(self.llm.clone(), registry);
+        let agent = Agent::new(self.llm.clone(), self.config.clone(), registry);
         let agent_tx = events.agent_tx.clone();
 
         tokio::spawn(async move {

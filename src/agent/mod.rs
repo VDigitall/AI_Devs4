@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use crate::config::Config;
 use crate::llm::{LlmClient, Message};
 use crate::tools::{ToolContext, ToolRegistry};
 
@@ -59,12 +60,13 @@ pub enum AgentEvent {
 
 pub struct Agent {
     llm: LlmClient,
+    config: Config,
     registry: Arc<ToolRegistry>,
 }
 
 impl Agent {
-    pub fn new(llm: LlmClient, registry: Arc<ToolRegistry>) -> Self {
-        Self { llm, registry }
+    pub fn new(llm: LlmClient, config: Config, registry: Arc<ToolRegistry>) -> Self {
+        Self { llm, config, registry }
     }
 
     /// Run the full plan-then-execute cycle for a task.
@@ -108,7 +110,7 @@ impl Agent {
             }
         });
 
-        let tool_ctx = ToolContext::new(self.llm.clone(), log_tx);
+        let tool_ctx = ToolContext::new(self.llm.clone(), self.config.clone(), log_tx);
 
         let mut all_steps: Vec<PlanStep> = Vec::new();
         let mut step_results: Vec<Value> = Vec::new();

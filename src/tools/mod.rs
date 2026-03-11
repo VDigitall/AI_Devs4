@@ -3,7 +3,10 @@ pub mod filter_data;
 pub mod geocode_reverse;
 pub mod get_env_var;
 pub mod http_post;
+pub mod logistics_assistant;
+pub mod packages;
 pub mod parse_json;
+pub mod start_proxy;
 pub mod tag_with_llm;
 
 use anyhow::Result;
@@ -13,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use crate::config::Config;
 use crate::llm::LlmClient;
 
 // ── ToolContext ───────────────────────────────────────────────────────────────
@@ -22,14 +26,16 @@ use crate::llm::LlmClient;
 pub struct ToolContext {
     pub http: reqwest::Client,
     pub llm: LlmClient,
+    pub config: Config,
     pub log_tx: mpsc::Sender<String>,
 }
 
 impl ToolContext {
-    pub fn new(llm: LlmClient, log_tx: mpsc::Sender<String>) -> Self {
+    pub fn new(llm: LlmClient, config: Config, log_tx: mpsc::Sender<String>) -> Self {
         Self {
             http: reqwest::Client::new(),
             llm,
+            config,
             log_tx,
         }
     }
@@ -118,5 +124,8 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(tag_with_llm::TagWithLlmTool);
     reg.register(http_post::HttpPostTool);
     reg.register(get_env_var::GetEnvVarTool);
+    reg.register(packages::CheckPackageTool);
+    reg.register(packages::RedirectPackageTool);
+    reg.register(start_proxy::StartProxyTool);
     reg
 }
