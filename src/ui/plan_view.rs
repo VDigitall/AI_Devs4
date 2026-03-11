@@ -93,8 +93,11 @@ impl<'a> Widget for PlanViewWidget<'a> {
                     let (icon, style) = step_icon_style(&step.status);
                     let number = format!("{:2}. ", i + 1);
                     let tool = format!("{} ", step.tool_name);
+                    // prefix: number(4) + icon(1) + space(1) + tool + borders(2)
+                    let prefix_len = 4 + 1 + 1 + tool.len() + 2;
+                    let max_len = (area.width as usize).saturating_sub(prefix_len);
                     let masked = mask_args(&step.arguments, self.secrets, self.reveal_flags);
-                    let args_preview = truncate_args(&masked, 40);
+                    let args_preview = truncate_args(&masked, max_len);
 
                     Line::from(vec![
                         Span::styled(number, Style::default().fg(Color::DarkGray)),
@@ -129,8 +132,11 @@ impl<'a> Widget for PlanViewWidget<'a> {
                 let (icon, style) = step_icon_style(&step.status);
                 let number = format!("   {:2}. ", i + 1);
                 let tool = format!("{} ", step.tool_name);
+                // prefix: number(7) + icon(1) + space(1) + tool + borders(2)
+                let prefix_len = 7 + 1 + 1 + tool.len() + 2;
+                let max_len = (area.width as usize).saturating_sub(prefix_len);
                 let masked = mask_args(&step.arguments, self.secrets, self.reveal_flags);
-                let args_preview = truncate_args(&masked, 35);
+                let args_preview = truncate_args(&masked, max_len);
 
                 lines.push(Line::from(vec![
                     Span::styled(number, Style::default().fg(Color::DarkGray)),
