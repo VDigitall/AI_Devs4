@@ -110,6 +110,7 @@ impl LogisticsAssistant {
             content: Some(text.clone()),
             tool_calls: None,
             tool_call_id: None,
+            content_parts: None,
         });
         self.sessions
             .write()

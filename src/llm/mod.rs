@@ -8,6 +8,21 @@ const OPENROUTER_API_URL: &str = "https://openrouter.ai/api/v1/chat/completions"
 // ── Request types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Clone)]
+pub struct ImageUrl {
+    pub url: String,
+}
+
+/// A single part inside a multimodal `content` array.
+#[derive(Debug, Serialize, Clone)]
+#[serde(tag = "type")]
+pub enum ContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: ImageUrl },
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct Message {
     pub role: String,
     pub content: Option<String>,
@@ -15,6 +30,10 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Multimodal content parts (text + images). When set, `chat()` serialises
+    /// `content` as the JSON array instead of a plain string.
+    #[serde(skip)]
+    pub content_parts: Option<Vec<ContentPart>>,
 }
 
 impl Message {
@@ -24,6 +43,7 @@ impl Message {
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
+            content_parts: None,
         }
     }
 
@@ -33,6 +53,25 @@ impl Message {
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
+            content_parts: None,
+        }
+    }
+
+    /// Build a user message with text + one or more image URLs (direct or
+    /// base64 data-URLs).
+    pub fn user_with_images(text: impl Into<String>, image_urls: Vec<String>) -> Self {
+        let mut parts = vec![ContentPart::Text { text: text.into() }];
+        for url in image_urls {
+            parts.push(ContentPart::ImageUrl {
+                image_url: ImageUrl { url },
+            });
+        }
+        Self {
+            role: "user".into(),
+            content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: Some(parts),
         }
     }
 
@@ -42,6 +81,7 @@ impl Message {
             content: None,
             tool_calls: Some(tool_calls),
             tool_call_id: None,
+            content_parts: None,
         }
     }
 
@@ -51,6 +91,7 @@ impl Message {
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            content_parts: None,
         }
     }
 }
@@ -157,7 +198,14 @@ impl LlmClient {
     ) -> Result<ResponseMessage> {
         let serialized_messages: Vec<Value> = messages
             .into_iter()
-            .map(|m| serde_json::to_value(m).unwrap())
+            .map(|m| {
+                let parts = m.content_parts.clone();
+                let mut v = serde_json::to_value(m).unwrap();
+                if let Some(parts) = parts {
+                    v["content"] = serde_json::to_value(parts).unwrap();
+                }
+                v
+            })
             .collect();
 
         let tool_choice = tools.as_ref().map(|_| "auto".to_string());
