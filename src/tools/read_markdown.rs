@@ -97,6 +97,21 @@ impl Tool for ReadMarkdownTool {
                 let content = response.text().await?;
                 info!(url = %url, bytes = content.len(), "read_markdown: fetched successfully");
                 ctx.log(format!("read_markdown: fetched {} bytes from {url}", content.len())).await;
+
+                let stem = url
+                    .rsplit('/')
+                    .next()
+                    .and_then(|s| s.split('?').next())
+                    .and_then(|s| std::path::Path::new(s).file_stem()?.to_str())
+                    .unwrap_or("unknown");
+                let path = format!("artifacts/{stem}.md");
+                std::fs::create_dir_all("artifacts")
+                    .map_err(|e| anyhow!("read_markdown: cannot create 'artifacts/' – {e}"))?;
+                std::fs::write(&path, &content)
+                    .map_err(|e| anyhow!("read_markdown: cannot write '{path}' – {e}"))?;
+                info!(path = %path, "read_markdown: saved to file");
+                ctx.log(format!("read_markdown: saved to file '{path}'")).await;
+
                 Ok(json!({ "content": content }))
             }
 
