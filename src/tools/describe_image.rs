@@ -8,7 +8,7 @@ use tracing::{debug, info};
 use crate::llm::Message;
 use super::{Tool, ToolContext};
 
-const VISION_MODEL: &str = "google/gemini-2.0-flash-001";
+const VISION_MODEL: &str = "google/gemini-3-flash-preview";
 
 pub struct DescribeImageTool;
 
