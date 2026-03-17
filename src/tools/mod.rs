@@ -4,6 +4,7 @@ pub mod fetch_csv;
 pub mod filter_data;
 pub mod geocode_reverse;
 pub mod get_env_var;
+pub mod http_get;
 pub mod http_post;
 pub mod logistics_assistant;
 pub mod packages;
@@ -214,6 +215,7 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(parse_json::ParseJsonTool);
     reg.register(read_markdown::ReadMarkdownTool);
     reg.register(tag_with_llm::TagWithLlmTool);
+    reg.register(http_get::HttpGetTool);
     reg.register(http_post::HttpPostTool);
     reg.register(get_env_var::GetEnvVarTool);
     reg.register(packages::CheckPackageTool);
