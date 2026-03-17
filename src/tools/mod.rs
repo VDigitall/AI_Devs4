@@ -1,4 +1,5 @@
 pub mod describe_image;
+pub mod download_file;
 pub mod extract_links;
 pub mod fetch_csv;
 pub mod filter_data;
@@ -208,6 +209,7 @@ impl Default for ToolRegistry {
 pub fn default_registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(describe_image::DescribeImageTool);
+    reg.register(download_file::DownloadFileTool);
     reg.register(extract_links::ExtractLinksTool);
     reg.register(fetch_csv::FetchCsvTool);
     reg.register(filter_data::FilterDataTool);
