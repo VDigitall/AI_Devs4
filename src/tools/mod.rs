@@ -9,6 +9,8 @@ pub mod get_env_var;
 pub mod http_get;
 pub mod join_lines;
 pub mod http_post;
+pub mod memory_read;
+pub mod memory_write;
 pub mod logistics_assistant;
 pub mod packages;
 pub mod parse_json;
@@ -226,6 +228,8 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(http_post::HttpPostTool);
     reg.register(get_env_var::GetEnvVarTool);
     reg.register(join_lines::JoinLinesTool);
+    reg.register(memory_read::MemoryReadTool);
+    reg.register(memory_write::MemoryWriteTool);
     reg.register(packages::CheckPackageTool);
     reg.register(packages::RedirectPackageTool);
     reg.register(sleep::SleepTool);
