@@ -7,6 +7,7 @@ pub mod filter_data;
 pub mod geocode_reverse;
 pub mod get_env_var;
 pub mod http_get;
+pub mod join_lines;
 pub mod http_post;
 pub mod logistics_assistant;
 pub mod packages;
@@ -224,6 +225,7 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(http_get::HttpGetTool);
     reg.register(http_post::HttpPostTool);
     reg.register(get_env_var::GetEnvVarTool);
+    reg.register(join_lines::JoinLinesTool);
     reg.register(packages::CheckPackageTool);
     reg.register(packages::RedirectPackageTool);
     reg.register(sleep::SleepTool);
