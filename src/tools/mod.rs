@@ -11,6 +11,7 @@ pub mod http_post;
 pub mod logistics_assistant;
 pub mod packages;
 pub mod parse_json;
+pub mod read_log;
 pub mod read_markdown;
 pub mod sleep;
 pub mod start_proxy;
@@ -217,6 +218,7 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(filter_data::FilterDataTool);
     reg.register(geocode_reverse::GeocodeReverseTool);
     reg.register(parse_json::ParseJsonTool);
+    reg.register(read_log::ReadLogTool);
     reg.register(read_markdown::ReadMarkdownTool);
     reg.register(tag_with_llm::TagWithLlmTool);
     reg.register(http_get::HttpGetTool);
