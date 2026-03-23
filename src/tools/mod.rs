@@ -1,8 +1,10 @@
 pub mod count_tokens;
+// pub mod evaluate_sensors;
 pub mod describe_image;
 pub mod download_file;
 pub mod extract_links;
 pub mod fetch_csv;
+pub mod fetch_page;
 pub mod filter_data;
 pub mod geocode_reverse;
 pub mod get_env_var;
@@ -214,10 +216,12 @@ impl Default for ToolRegistry {
 pub fn default_registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(count_tokens::CountTokensTool);
+    // reg.register(evaluate_sensors::EvaluateSensorsTool);
     reg.register(describe_image::DescribeImageTool);
     reg.register(download_file::DownloadFileTool);
     reg.register(extract_links::ExtractLinksTool);
     reg.register(fetch_csv::FetchCsvTool);
+    reg.register(fetch_page::FetchPageTool);
     reg.register(filter_data::FilterDataTool);
     reg.register(geocode_reverse::GeocodeReverseTool);
     reg.register(parse_json::ParseJsonTool);
