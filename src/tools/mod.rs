@@ -1,5 +1,5 @@
 pub mod count_tokens;
-// pub mod evaluate_sensors;
+pub mod evaluate_sensors;
 pub mod describe_image;
 pub mod download_file;
 pub mod extract_links;
@@ -216,7 +216,7 @@ impl Default for ToolRegistry {
 pub fn default_registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(count_tokens::CountTokensTool);
-    // reg.register(evaluate_sensors::EvaluateSensorsTool);
+    reg.register(evaluate_sensors::EvaluateSensorsTool);
     reg.register(describe_image::DescribeImageTool);
     reg.register(download_file::DownloadFileTool);
     reg.register(extract_links::ExtractLinksTool);
