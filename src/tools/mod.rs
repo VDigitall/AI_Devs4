@@ -7,6 +7,7 @@ pub mod extract_links;
 pub mod fetch_csv;
 pub mod fetch_page;
 pub mod filter_data;
+pub mod filter_invalid_files;
 pub mod geocode_reverse;
 pub mod get_env_var;
 pub mod http_get;
@@ -240,5 +241,6 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(packages::RedirectPackageTool);
     reg.register(sleep::SleepTool);
     reg.register(start_proxy::StartProxyTool);
+    reg.register(filter_invalid_files::FilterInvalidFilesTool);
     reg
 }
