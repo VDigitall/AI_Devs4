@@ -16,11 +16,13 @@ pub mod http_post;
 pub mod memory_read;
 pub mod memory_write;
 pub mod logistics_assistant;
+pub mod negotiations_assistant;
 pub mod packages;
 pub mod parse_json;
 pub mod read_log;
 pub mod read_markdown;
 pub mod sleep;
+pub mod start_negotiations_proxy;
 pub mod start_proxy;
 pub mod tag_with_llm;
 
@@ -240,6 +242,7 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(packages::CheckPackageTool);
     reg.register(packages::RedirectPackageTool);
     reg.register(sleep::SleepTool);
+    reg.register(start_negotiations_proxy::StartNegotiationsProxyTool);
     reg.register(start_proxy::StartProxyTool);
     reg.register(filter_invalid_files::FilterInvalidFilesTool);
     reg
